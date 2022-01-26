@@ -61,5 +61,34 @@ pipeline {
                 }
             }
         }
+        stage('Publish docker image') {
+            when {
+                anyOf {
+                    buildingTag()
+                    branch 'develop'
+                    // changeRequest() // uncomment only for testing
+                }
+            }
+            environment {
+                DOCKER_IMAGE_TAG_VERSIONED = "${ env.TAG_NAME ? env.TAG_NAME : env.BRANCH_NAME }"
+                DOCKER_IMAGE_NAME_VERSIONED = "ghcr.io/vegaprotocol/data-node/data-node:${DOCKER_IMAGE_TAG_VERSIONED}"
+                DOCKER_IMAGE_TAG_ALIAS = "${ env.TAG_NAME ? 'latest' : 'edge' }"
+                DOCKER_IMAGE_NAME_ALIAS = "ghcr.io/vegaprotocol/data-node/data-node:${DOCKER_IMAGE_TAG_ALIAS}"
+            }
+            options { retry(3) }
+            steps {
+                sh label: 'Tag new images', script: '''#!/bin/bash -e
+                    docker image tag "${DOCKER_IMAGE_NAME_LOCAL}" "${DOCKER_IMAGE_NAME_VERSIONED}"
+                    docker image tag "${DOCKER_IMAGE_NAME_LOCAL}" "${DOCKER_IMAGE_NAME_ALIAS}"
+                '''
+
+                withDockerRegistry([credentialsId: 'github-vega-ci-bot-artifacts', url: "https://ghcr.io"]) {
+                    sh label: 'Push docker images', script: '''
+                        docker push "${DOCKER_IMAGE_NAME_VERSIONED}"
+                        docker push "${DOCKER_IMAGE_NAME_ALIAS}"
+                    '''
+                }
+            }
+        }
     }
 }
