@@ -1,0 +1,7 @@
+# Service
+host: "localhost"
+port: 8022
+
+# Notion
+notionAccessToken: "secret_XXXXXXXXXXXXXXXXXXXXX"  # Vega Notion Data API
+notionPollDuration: "15m"
