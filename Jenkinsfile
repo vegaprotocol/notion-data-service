@@ -39,9 +39,7 @@ pipeline {
             options { retry(3) }
             steps {
                 retry(3) {
-                    dir('notion-data-service') {
                         checkout scm
-                    }
                 }
             }
         }
@@ -58,7 +56,7 @@ pipeline {
             steps {
                 withDockerRegistry([credentialsId: 'github-vega-ci-bot-artifacts', url: "https://ghcr.io"]) {
                     sh label: 'Build docker image', script: '''
-                        docker build -t "${DOCKER_IMAGE_NAME_LOCAL}" notion-data-service
+                        docker build -t "${DOCKER_IMAGE_NAME_LOCAL}" .
                     '''
                 }
             }
