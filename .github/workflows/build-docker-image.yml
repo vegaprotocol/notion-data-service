@@ -41,7 +41,7 @@ jobs:
           context: .
           platforms: linux/amd64
           push: ${{ github.event_name != 'pull_request' }}
-          tags: ghcr.io/notion-data-service:${{ steps.vars.outputs.tag }}
+          tags: ghcr.io/vegaprotocol/notion-data-service/notion-data-service:${{ steps.vars.outputs.tag }}
 
       - name: Image digest
         run: echo ${{ steps.docker_build.outputs.digest }}
