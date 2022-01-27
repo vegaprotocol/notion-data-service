@@ -24,7 +24,7 @@ jobs:
         uses: docker/login-action@v1
         with:
           registry: ghcr.io
-          username: github-vega-ci-bot-artifacts
+          username: vega-peter
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Set docker image tag
