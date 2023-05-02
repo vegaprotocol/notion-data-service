@@ -1,7 +1,14 @@
 # Service
-host: "localhost"
-port: 8022
+host: "0.0.0.0"
+port: 8080
 
 # Notion
-notionAccessToken: "secret_XXXXXXXXXXXXXXXXXXXXX"  # Vega Notion Data API
-notionPollDuration: "15m"
+-notionAccessToken: "secret_XXXXXXXXXXXXXXXXXXXXX"  # Vega Notion Data API
+-notionPollDuration: "15m"
+
+knownDatabases:
+  - aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee
+
+
+# Options
+

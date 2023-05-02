@@ -48,7 +48,7 @@ func startService(conf ConfigVars) {
 	log.Infof("Polling Notion.so every %s", pollDuration)
 	log.Infof("API binding to %s:%s", conf.Host, conf.Port)
 
-	notionService := notion.NewDataService(conf.NotionAccessToken, pollDuration)
+	notionService := notion.NewDataService(conf.NotionAccessToken, pollDuration, conf.KnownDatabases)
 
 	router := mux.NewRouter()
 	router.NotFoundHandler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -76,6 +76,11 @@ func startService(conf ConfigVars) {
 	// Start contributor service
 	go func() {
 		notionService.Start()
+	}()
+
+	// Start cleanup loop
+	go func() {
+		notionService.CleanupLoop()
 	}()
 
 	// Start api web service
@@ -127,6 +132,7 @@ func QueryHandler(w http.ResponseWriter, r *http.Request, s *notion.Service) {
 	if len(noCache) > 0 {
 		dataItems, err = s.QueryDatabase(id, true)
 	}
+
 	response := DataResponse{
 		LastUpdated: time.Now().Unix(),
 		Items:       dataItems,
@@ -144,12 +150,7 @@ func QueryHandler(w http.ResponseWriter, r *http.Request, s *notion.Service) {
 
 func ListHandler(w http.ResponseWriter, r *http.Request, s *notion.Service) {
 	w.Header().Set("Content-Type", "application/json")
-	dbs, err := s.ListDatabases()
-	if err != nil {
-		log.WithError(err).Error("Failed to list databases")
-		w.WriteHeader(http.StatusInternalServerError)
-		return
-	}
+	dbs := s.ListDatabases()
 	response := ListResponse{
 		LastUpdated: time.Now().Unix(),
 		Databases:   dbs,
@@ -191,8 +192,8 @@ func RootHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 type ListResponse struct {
-	LastUpdated int64             `json:"last_updated"`
-	Databases   map[string]string `json:"notion_databases"`
+	LastUpdated int64    `json:"last_updated"`
+	Databases   []string `json:"notion_databases"`
 }
 
 type DataResponse struct {
