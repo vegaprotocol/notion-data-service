@@ -13,6 +13,10 @@ import (
 	"github.com/vegaprotocol/notion-data-service/util"
 )
 
+// IgnoreDatabaseDuration define how often we can try to pull unknown databases
+// when database pull fails
+const IgnoreDatabaseDuration = 5 * time.Minute
+
 type DataItem struct {
 	ID          string         `json:"id"`
 	Properties  []DataProperty `json:"properties"`
@@ -30,13 +34,21 @@ type Service struct {
 	lastUpdated       time.Time
 	pollDuration      time.Duration
 	timer             *time.Ticker
-	mu                sync.RWMutex
+
+	mu                   sync.RWMutex
+	ignoreDatabasesMutex sync.RWMutex
+	wipMutex             sync.Mutex
+
+	ignoredDatabases map[string]time.Time
+	knownDatabases   []string
 }
 
-func NewDataService(notionAccessToken string, pollDuration time.Duration) *Service {
+func NewDataService(notionAccessToken string, pollDuration time.Duration, knownDatabases []string) *Service {
 	svc := &Service{
 		notionAccessToken: notionAccessToken,
 		pollDuration:      pollDuration,
+		ignoredDatabases:  map[string]time.Time{},
+		knownDatabases:    knownDatabases,
 	}
 	return svc
 }
@@ -56,20 +68,20 @@ func (s *Service) Start() {
 func (s *Service) update() {
 	log.Info("Begin update of Notion.so data")
 
-	dbs, err := s.ListDatabases()
-	if err != nil {
-		log.WithError(err).Error("Failed to load list of notion databases during update")
+	dbs := s.ListDatabases()
+	if len(dbs) == 0 {
+		log.Info("Service currently does not manage any notion database. Database is added when queried for a first time")
 		return
 	}
 	res := map[string][]DataItem{}
-	for k, v := range dbs {
-		log.Infof("Querying Notion.so for database %s [%s]", k, v)
-		dataItems, err := s.QueryDatabase(k, false)
+	for _, databaseID := range dbs {
+		log.Infof("Querying Notion.so for database %s", databaseID)
+		dataItems, err := s.QueryDatabase(databaseID, false)
 		if err != nil {
-			log.WithError(err).Errorf("Failed to query notion database %s during update", k)
+			log.WithError(err).Errorf("Failed to query notion database %s during update", databaseID)
 		} else {
-			log.Infof("Found and processed data items for %s [%s]", k, v)
-			res[k] = dataItems
+			log.Infof("Found and processed %d data items for %s database", len(dataItems), databaseID)
+			res[databaseID] = dataItems
 		}
 	}
 
@@ -87,36 +99,53 @@ func (s *Service) Stop() {
 	log.Info("Notion data service stopped")
 }
 
-func (s *Service) ListDatabases() (map[string]string, error) {
-	token := jnotionapi.Token(s.notionAccessToken)
-	client := jnotionapi.NewClient(token)
-	pagination := jnotionapi.Pagination{
-		StartCursor: "",
-		PageSize:    100,
+// The Notion has deprecated the List databases endpoint. So there is no option to list them.
+// Instead of List, we construct list of the databases map in the Service struct.
+// Object is added to the database map when requested for a first time.
+func (s *Service) ListDatabases() []string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	result := []string{}
+
+	for databaseID, _ := range s.databaseMap {
+		result = append(result, databaseID)
 	}
-	response, err := client.Database.List(context.Background(), &pagination)
-	if err != nil {
-		return nil, err
-	}
-	results := map[string]string{}
-	for _, r := range response.Results {
-		title := ""
-		for _, tt := range r.Title {
-			title += tt.PlainText
-		}
-		results[r.ID.String()] = title
-	}
-	return results, nil
+
+	return result
 }
 
 func (s *Service) QueryDatabaseCached(notionID string) ([]DataItem, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.mu.RLock()
+	if val, ok := s.databaseMap[notionID]; ok {
+		log.Infof("The database %s fetched from cache", notionID)
+		s.mu.RUnlock()
+		return val, nil
+	}
+	s.mu.RUnlock()
+
+	// This lock must be very rare. Usually We hit it only when there is an error for Notion
+	s.wipMutex.Lock()
+	defer s.wipMutex.Unlock()
+
+	if s.IsDatabaseIgnored(notionID) {
+		log.Warnf("The database %s cannot be fetched: database is ignored. Try agin later", notionID)
+		return nil, fmt.Errorf("the %s database ignored", notionID)
+	}
+
+	// Check if another thread already fetched database
 	if val, ok := s.databaseMap[notionID]; ok {
 		return val, nil
 	}
-	log.Warnf("Cannot find database with ID %s in cache", notionID)
-	return nil, nil
+
+	log.Warnf("Cannot find database with ID %s in cache, trying to query it", notionID)
+	res, err := s.QueryDatabase(notionID, true)
+	if err != nil {
+		s.ignoreNotionDatabase(notionID)
+		return nil, fmt.Errorf("failed to query database %s: %w", notionID, err)
+	}
+
+	return res, nil
 }
 
 func (s *Service) QueryDatabase(notionID string, updateMapIfSuccess bool) ([]DataItem, error) {
@@ -259,4 +288,64 @@ func (s *Service) processPageProperties(pages []jnotionapi.Page) []DataItem {
 	//}
 
 	return res
+}
+
+func (s *Service) IsDatabaseIgnored(notionID string) bool {
+	s.ignoreDatabasesMutex.RLock()
+	defer s.ignoreDatabasesMutex.RUnlock()
+
+	if s.ignoredDatabases == nil {
+		return false
+	}
+
+	normalizedID := normalizedNotionID(notionID)
+	ignoredDbTime, ignoredDBExist := s.ignoredDatabases[normalizedID]
+	if !ignoredDBExist {
+		return false
+	}
+
+	return ignoredDbTime.Add(IgnoreDatabaseDuration).After(time.Now())
+}
+
+func (s *Service) ignoreNotionDatabase(notionID string) {
+	s.ignoreDatabasesMutex.Lock()
+	defer s.ignoreDatabasesMutex.Unlock()
+
+	normalizedID := normalizedNotionID(notionID)
+	// do not ignore known databases
+	for _, knownID := range s.knownDatabases {
+		if normalizedNotionID(knownID) == normalizedID {
+			return
+		}
+	}
+
+	log.Infof("The %s database added to ignored set", notionID)
+	s.ignoredDatabases[normalizedID] = time.Now()
+}
+
+func normalizedNotionID(notionID string) string {
+	notionID = strings.ReplaceAll(notionID, " ", "")
+	return strings.ReplaceAll(notionID, "-", "")
+}
+
+func (s *Service) CleanupLoop() {
+	ticker := time.NewTicker(2 * time.Minute)
+
+	for {
+		select {
+		case <-ticker.C:
+			s.ignoreDatabasesMutex.Lock()
+
+			for notionID, ignoredDbTime := range s.ignoredDatabases {
+				if ignoredDbTime.Add(IgnoreDatabaseDuration).After(time.Now()) {
+					continue
+				}
+
+				log.Infof("Removing %s database from ignored databases", notionID)
+				delete(s.ignoredDatabases, notionID)
+			}
+
+			s.ignoreDatabasesMutex.Unlock()
+		}
+	}
 }
