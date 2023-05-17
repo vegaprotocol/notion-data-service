@@ -80,7 +80,6 @@ func (s *Service) update() {
 		if err != nil {
 			log.WithError(err).Errorf("Failed to query notion database %s during update", databaseID)
 		} else {
-			log.Infof("Found and processed %d data items for %s database", len(dataItems), databaseID)
 			res[databaseID] = dataItems
 		}
 	}
@@ -152,26 +151,44 @@ func (s *Service) QueryDatabase(notionID string, updateMapIfSuccess bool) ([]Dat
 	dbID := jnotionapi.DatabaseID(notionID)
 	token := jnotionapi.Token(s.notionAccessToken)
 	client := jnotionapi.NewClient(token)
-	queryReq := jnotionapi.DatabaseQueryRequest{
-		StartCursor: "",
-		PageSize:    100,
+
+	result := []DataItem{}
+	var nextCursor jnotionapi.Cursor
+
+	for {
+		queryReq := jnotionapi.DatabaseQueryRequest{
+			StartCursor: nextCursor,
+			PageSize:    100,
+		}
+		page, err := client.Database.Query(context.Background(), dbID, &queryReq)
+
+		if err != nil {
+			log.WithError(err).Errorf("Failed to query notion database %s via API for cursor: %s", notionID, nextCursor)
+			return nil, err
+		}
+		if page == nil {
+			log.WithError(err).Errorf("Failed to find page for notion database %s via API for cursor: %s", notionID, nextCursor)
+			return nil, err
+		}
+		res := s.processPageProperties(page.Results)
+
+		result = append(result, res...)
+		nextCursor = page.NextCursor
+
+		if nextCursor == "" {
+			break
+		}
 	}
-	page, err := client.Database.Query(context.Background(), dbID, &queryReq)
-	if err != nil {
-		log.WithError(err).Errorf("Failed to query notion database %s via API", notionID)
-		return nil, err
-	}
-	if page == nil {
-		log.WithError(err).Errorf("Failed to find page for notion database %s via API", notionID)
-		return nil, err
-	}
-	res := s.processPageProperties(page.Results)
-	if updateMapIfSuccess && len(res) > 0 {
+
+	if updateMapIfSuccess && len(result) > 0 {
 		s.mu.Lock()
-		s.databaseMap[notionID] = res
+		s.databaseMap[notionID] = result
 		s.mu.Unlock()
 	}
-	return res, nil
+
+	log.Infof("Found and processed %d data items for %s database", len(result), notionID)
+
+	return result, nil
 }
 
 func (s *Service) processPageProperties(pages []jnotionapi.Page) []DataItem {
