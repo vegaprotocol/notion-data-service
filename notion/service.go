@@ -200,12 +200,17 @@ func (s *Service) processPageProperties(pages []jnotionapi.Page) []DataItem {
 		// for each page result, look at properties
 		for k, p := range p.Properties {
 			pr := DataProperty{Name: k}
+
 			pr.Values = make([]string, 0)
 			t, ok := p.(*jnotionapi.TitleProperty)
 			if ok {
+				titleValues := []string{}
+
 				for _, tt := range t.Title {
-					pr.Values = append(pr.Values, tt.PlainText)
+					titleValues = append(titleValues, tt.PlainText)
 				}
+
+				pr.Values = append(pr.Values, strings.Join(titleValues, ""))
 			}
 			rt, ok := p.(*jnotionapi.RichTextProperty)
 			if ok {
